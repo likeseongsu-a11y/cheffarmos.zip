@@ -12,68 +12,83 @@ permissions:
 jobs:
   transcribe:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Rebuild local Korean speech model and audio
+      - name: Rebuild audio and offline fallback model
         run: |
           set -euxo pipefail
-          cat tmp-assets/vosk.whl.part-* > /tmp/vosk.whl
-          cat tmp-assets/model.zip.part-* > /tmp/model.zip
-          sha256sum /tmp/vosk.whl /tmp/model.zip
-          python -m pip install /tmp/vosk.whl
-          unzip -q /tmp/model.zip -d /tmp/vosk-model
           base64 -d input_audio_v8.opus.b64 > /tmp/input.opus
           ffmpeg -hide_banner -loglevel error -y -i /tmp/input.opus -ac 1 -ar 16000 -c:a pcm_s16le /tmp/input.wav
+          cat tmp-assets/vosk.whl.part-* > /tmp/vosk.whl
+          cat tmp-assets/model.zip.part-* > /tmp/model.zip
+          python -m pip install /tmp/vosk.whl
+          unzip -q /tmp/model.zip -d /tmp/vosk-model
+          python -m pip install 'faster-whisper==1.1.1' || true
       - name: Transcribe and make timed subtitles
         run: |
           cat > /tmp/transcribe.py <<'PY'
-          import json, wave, os, glob
-          from vosk import Model, KaldiRecognizer, SetLogLevel
-          SetLogLevel(-1)
-          model_dirs=[p for p in glob.glob('/tmp/vosk-model/*') if os.path.isdir(p)]
-          if not model_dirs: raise SystemExit('model folder missing')
-          wf=wave.open('/tmp/input.wav','rb')
-          rec=KaldiRecognizer(Model(model_dirs[0]), wf.getframerate())
-          rec.SetWords(True)
-          results=[]
-          while True:
-              data=wf.readframes(8000)
-              if not data: break
-              if rec.AcceptWaveform(data):
-                  r=json.loads(rec.Result())
-                  if r.get('result'): results.append(r)
-          r=json.loads(rec.FinalResult())
-          if r.get('result'): results.append(r)
-          words=[]
-          for r in results: words.extend(r.get('result',[]))
-          # Group at pauses, 13 Korean chars/line, max 3.8 seconds.
+          import json, wave, os, glob, traceback
+          words=[]; engine=''
+          try:
+              from faster_whisper import WhisperModel
+              model=WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=4)
+              segs, info=model.transcribe('/tmp/input.opus', language='ko', beam_size=5,
+                  vad_filter=True, word_timestamps=True,
+                  initial_prompt='93오빠와 다은이의 데이트 기록. 건대, 한강, 뚝섬, 카메라, 오빠, 다은.')
+              for seg in segs:
+                  if seg.words:
+                      for w in seg.words:
+                          tx=(w.word or '').strip()
+                          if tx: words.append({'word':tx,'start':float(w.start),'end':float(w.end),'prob':float(w.probability or 0)})
+              engine='faster-whisper-small'
+          except Exception:
+              traceback.print_exc()
+              from vosk import Model, KaldiRecognizer, SetLogLevel
+              SetLogLevel(-1)
+              model_dirs=[p for p in glob.glob('/tmp/vosk-model/*') if os.path.isdir(p)]
+              wf=wave.open('/tmp/input.wav','rb')
+              rec=KaldiRecognizer(Model(model_dirs[0]), wf.getframerate()); rec.SetWords(True)
+              results=[]
+              while True:
+                  data=wf.readframes(8000)
+                  if not data: break
+                  if rec.AcceptWaveform(data):
+                      r=json.loads(rec.Result())
+                      if r.get('result'): results.append(r)
+              r=json.loads(rec.FinalResult())
+              if r.get('result'): results.append(r)
+              for r in results:
+                  for w in r.get('result',[]): words.append({'word':w['word'],'start':w['start'],'end':w['end'],'prob':w.get('conf',0)})
+              engine='vosk-small-ko'
           groups=[]; cur=[]
           def emit():
-              nonlocal cur
+              global cur
               if not cur: return
-              groups.append({'start':cur[0]['start'],'end':cur[-1]['end'],'text':' '.join(w['word'] for w in cur),'words':cur})
+              text=' '.join(w['word'] for w in cur).strip()
+              if text: groups.append({'start':cur[0]['start'],'end':cur[-1]['end'],'text':text,'words':cur})
               cur=[]
           for w in words:
               if cur:
                   pause=w['start']-cur[-1]['end']
                   chars=sum(len(x['word']) for x in cur)+len(cur)-1
                   dur=w['end']-cur[0]['start']
-                  if pause>0.72 or chars+len(w['word'])+1>24 or dur>3.8:
-                      emit()
+                  if pause>0.65 or chars+len(w['word'])+1>25 or dur>3.7: emit()
               cur.append(w)
           emit()
           def stamp(t):
               ms=round(t*1000); h=ms//3600000; ms%=3600000; m=ms//60000; ms%=60000; s=ms//1000; ms%=1000
               return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
-          with open('transcript_v8.json','w',encoding='utf-8') as f: json.dump({'words':words,'segments':groups},f,ensure_ascii=False,indent=2)
+          payload={'engine':engine,'words':words,'segments':groups}
+          with open('transcript_v8.json','w',encoding='utf-8') as f: json.dump(payload,f,ensure_ascii=False,indent=2)
           with open('transcript_v8.txt','w',encoding='utf-8') as f:
+              f.write('ENGINE: '+engine+'\n')
               for g in groups: f.write(f"[{g['start']:.2f}-{g['end']:.2f}] {g['text']}\n")
           with open('transcript_v8.srt','w',encoding='utf-8') as f:
               for i,g in enumerate(groups,1): f.write(f"{i}\n{stamp(g['start'])} --> {stamp(g['end'])}\n{g['text']}\n\n")
-          print('words',len(words),'segments',len(groups))
+          print(engine,'words',len(words),'segments',len(groups))
           PY
           python /tmp/transcribe.py
       - name: Commit transcript
