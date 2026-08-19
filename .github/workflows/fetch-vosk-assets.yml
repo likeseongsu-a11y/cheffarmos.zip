@@ -1,42 +1,24 @@
-name: Fetch Vosk Korean Assets
+name: Cleanup Temporary Speech Assets
 
 on:
   push:
     paths:
       - '.github/workflows/fetch-vosk-assets.yml'
-  workflow_dispatch:
 
 permissions:
   contents: write
 
-env:
-  VOSK_WHEEL_URL: https://files.pythonhosted.org/packages/fc/ca/83398cfcd557360a3d7b2d732aee1c5f6999f68618d1645f38d53e14c9ff/vosk-0.3.45-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.whl
-  VOSK_MODEL_URL: https://alphacephei.com/vosk/models/vosk-model-small-ko-0.22.zip
-
 jobs:
-  fetch:
+  cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: Download and split speech-recognition assets
-        run: |
-          set -euxo pipefail
-          rm -rf tmp-assets assets
-          mkdir -p assets tmp-assets
-          curl --fail --location --retry 4 --retry-delay 2 "$VOSK_WHEEL_URL" --output assets/vosk.whl
-          curl --fail --location --retry 4 --retry-delay 2 "$VOSK_MODEL_URL" --output assets/model.zip
-          sha256sum assets/* | tee tmp-assets/SHA256SUMS.txt
-          split -b 4000000 -d -a 3 assets/vosk.whl tmp-assets/vosk.whl.part-
-          split -b 4000000 -d -a 3 assets/model.zip tmp-assets/model.zip.part-
-          ls -lh tmp-assets
-      - name: Commit temporary chunks for retrieval
+      - name: Remove temporary transcription assets and workflow
         run: |
           set -euxo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tmp-assets
-          git commit -m "Add temporary Korean speech-recognition asset chunks" || exit 0
+          git rm -rf tmp-assets || true
+          git rm -f .github/workflows/fetch-vosk-assets.yml || true
+          git commit -m "Remove temporary speech-recognition assets" || exit 0
           git push
