@@ -1,0 +1,43 @@
+name: Fetch Whisper Small Korean ASR Artifact
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-whisper-small-artifact.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WHISPER_SMALL_URL: https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download model
+        run: |
+          set -euxo pipefail
+          mkdir -p assets/model
+          curl --fail --location --retry 5 --retry-delay 2 "$WHISPER_SMALL_URL" --output assets/model/small.pt
+          sha256sum assets/model/small.pt > assets/SHA256SUMS.txt
+          ls -lh assets/model
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-small-local-stt
+          path: assets/
+          compression-level: 0
+          retention-days: 1
+      - name: Publish run ID marker
+        run: |
+          set -euxo pipefail
+          printf '%s\n' '${{ github.run_id }}' > whisper_small_artifact_run_id.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add whisper_small_artifact_run_id.txt
+          git commit -m 'Record Whisper small artifact workflow run ID' || exit 0
+          git push
