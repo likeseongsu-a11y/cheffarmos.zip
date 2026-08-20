@@ -1,0 +1,49 @@
+name: Fetch Whisper Base Korean ASR Artifact
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-whisper-base-artifact.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WHISPER_BASE_URL: https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build compatible package wheels and download model
+        run: |
+          set -euxo pipefail
+          mkdir -p assets/wheels assets/model
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip wheel 'openai-whisper' --no-deps --wheel-dir assets/wheels
+          python -m pip download 'tiktoken' --only-binary=:all: --dest assets/wheels
+          curl --fail --location --retry 5 --retry-delay 2 "$WHISPER_BASE_URL" --output assets/model/base.pt
+          sha256sum assets/wheels/* assets/model/base.pt > assets/SHA256SUMS.txt
+          ls -lh assets/wheels assets/model
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-base-local-stt
+          path: assets/
+          compression-level: 0
+          retention-days: 1
+      - name: Publish run ID marker
+        run: |
+          set -euxo pipefail
+          printf '%s\n' '${{ github.run_id }}' > whisper_base_artifact_run_id.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add whisper_base_artifact_run_id.txt
+          git commit -m 'Record Whisper base artifact workflow run ID' || exit 0
+          git push
