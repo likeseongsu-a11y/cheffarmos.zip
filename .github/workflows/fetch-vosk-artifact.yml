@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   VOSK_WHEEL_URL: https://files.pythonhosted.org/packages/fc/ca/83398cfcd557360a3d7b2d732aee1c5f6999f68618d1645f38d53e14c9ff/vosk-0.3.45-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.whl
@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
       - name: Download assets
         run: |
           set -euxo pipefail
@@ -33,3 +34,12 @@ jobs:
           path: assets/
           compression-level: 0
           retention-days: 1
+      - name: Publish run ID marker
+        run: |
+          set -euxo pipefail
+          printf '%s\n' '${{ github.run_id }}' > vosk_artifact_run_id.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add vosk_artifact_run_id.txt
+          git commit -m 'Record Vosk artifact workflow run ID' || exit 0
+          git push
